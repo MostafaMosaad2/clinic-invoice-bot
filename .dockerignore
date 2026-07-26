@@ -1,0 +1,16 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.pytest_cache
+.playwright
+storage_state.json
+*.png
+*.log
+debug_*.html
+debug_*.js
+scripts
+README.md
+*.md
