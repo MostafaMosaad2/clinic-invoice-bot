@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.playwright/
+storage_state.json
+*.png
+*.log
+.DS_Store
+debug_*.html
+debug_*.js
+scripts/inspect_once.py
+scripts/probe_*.py
+scripts/check_*.py
+scripts/extract_*.py
