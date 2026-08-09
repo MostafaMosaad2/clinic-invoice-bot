@@ -70,6 +70,33 @@ def search_patients(*, national_id: str, headed: bool = False) -> list[dict[str,
             return search_patients_by_national_id(page, settings, national_id)
 
 
+def _invoice_result(
+    *,
+    result: dict[str, Any],
+    clinic: str,
+    service: str,
+    amount: str,
+    invoice_date: str,
+    national_id: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "invoice_url": result.get("invoice_url") or result.get("edit_url") or result.get("list_url"),
+        "list_url": result.get("list_url"),
+        "edit_url": result.get("edit_url"),
+        "rec_id": result.get("rec_id"),
+        "serial": result.get("serial"),
+        "st_id": result.get("st_id"),
+        "patient_name": result.get("patient_name"),
+        "national_id": result.get("national_id") or national_id,
+        "date_updated_on_edit": bool(result.get("date_updated_on_edit")),
+        "clinic": clinic,
+        "service": service,
+        "amount": str(amount),
+        "date": invoice_date,
+    }
+
+
 def create_invoice_job(
     *,
     clinic: str,
@@ -92,19 +119,102 @@ def create_invoice_job(
                 invoice_date=invoice_date,
                 national_id=national_id,
             )
-            return {
-                "ok": True,
-                "invoice_url": result.get("invoice_url") or result.get("edit_url") or result.get("list_url"),
-                "list_url": result.get("list_url"),
-                "edit_url": result.get("edit_url"),
-                "rec_id": result.get("rec_id"),
-                "serial": result.get("serial"),
-                "st_id": result.get("st_id"),
-                "patient_name": result.get("patient_name"),
-                "national_id": result.get("national_id") or national_id,
-                "date_updated_on_edit": bool(result.get("date_updated_on_edit")),
-                "clinic": clinic,
-                "service": service,
-                "amount": str(amount),
-                "date": invoice_date,
-            }
+            return _invoice_result(
+                result=result,
+                clinic=clinic,
+                service=service,
+                amount=amount,
+                invoice_date=invoice_date,
+                national_id=national_id,
+            )
+
+
+def create_invoices_batch(
+    *,
+    items: list[dict[str, Any]],
+    headed: bool = False,
+) -> dict[str, Any]:
+    """
+    Create many invoices in one browser session.
+    Patients with no IMDAD file go into missing_files instead of aborting the batch.
+    """
+    settings = get_settings(headed=headed)
+    created: list[dict[str, Any]] = []
+    missing_files: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    with _lock:
+        with open_browser(settings) as (_pw, _browser, page):
+            login(page, settings)
+            for index, item in enumerate(items):
+                national_id = str(item.get("national_id") or "").strip()
+                clinic = str(item.get("clinic") or "").strip()
+                service = str(item.get("service") or "").strip()
+                amount = str(item.get("amount") or "").strip()
+                invoice_date = str(item.get("date") or "").strip()
+                row = {
+                    "index": index,
+                    "national_id": national_id,
+                    "clinic": clinic,
+                    "service": service,
+                    "amount": amount,
+                    "date": invoice_date,
+                }
+
+                if not national_id or not clinic or not service or not amount or not invoice_date:
+                    errors.append({**row, "error": "Missing required fields."})
+                    continue
+
+                try:
+                    matches = search_patients_by_national_id(page, settings, national_id)
+                    if not matches:
+                        missing_files.append(
+                            {
+                                **row,
+                                "reason": "No patient file found for this national ID.",
+                            }
+                        )
+                        continue
+
+                    patient = matches[0]
+                    result = run_create_and_backdate(
+                        page,
+                        settings,
+                        clinic=clinic,
+                        service=service,
+                        amount=amount,
+                        invoice_date=invoice_date,
+                        st_id=patient.get("st_id"),
+                    )
+                    payload = _invoice_result(
+                        result=result,
+                        clinic=clinic,
+                        service=service,
+                        amount=amount,
+                        invoice_date=invoice_date,
+                        national_id=national_id,
+                    )
+                    payload["patient_name"] = patient.get("name") or payload.get("patient_name")
+                    payload["st_id"] = patient.get("st_id") or payload.get("st_id")
+                    created.append(payload)
+                except Exception as exc:
+                    message = str(exc)
+                    if "No patient found" in message:
+                        missing_files.append(
+                            {
+                                **row,
+                                "reason": "No patient file found for this national ID.",
+                            }
+                        )
+                    else:
+                        errors.append({**row, "error": message})
+
+    return {
+        "ok": True,
+        "created": created,
+        "missing_files": missing_files,
+        "errors": errors,
+        "created_count": len(created),
+        "missing_count": len(missing_files),
+        "error_count": len(errors),
+    }

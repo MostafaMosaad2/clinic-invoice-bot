@@ -17,69 +17,26 @@
     <main class="shell">
       <header class="brand-block">
         <p class="brand">Invoice Desk</p>
-        <h1>Create a clinic invoice, then set its date.</h1>
+        <h1>Create clinic invoices for many patients.</h1>
         <p class="lede">
-          Search the patient by national ID, choose clinic and service, enter the
-          amount paid, and run create-and-backdate.
+          Add each patient with national ID, clinic, service, price, and date.
+          Create invoices for everyone who has a file, then review who does not.
         </p>
       </header>
 
       <section class="workspace" aria-label="Invoice form">
         <form id="invoice-form" class="invoice-form">
           <div class="meta-row" id="meta-row">
-            <span class="meta-chip" id="meta-patient">Patient —</span>
+            <span class="meta-chip" id="meta-count">0 patients</span>
             <span class="meta-chip quiet" id="meta-user">Signed in as —</span>
           </div>
 
-          <div class="nid-row">
-            <label class="field grow">
-              <span>National ID</span>
-              <input
-                id="national-id"
-                name="national_id"
-                type="text"
-                inputmode="numeric"
-                placeholder="e.g. 2576425918"
-                required
-              />
-            </label>
-            <button id="find-patient" type="button" class="secondary">
-              Find patient
+          <div id="patient-rows" class="patient-rows" aria-live="polite"></div>
+
+          <div class="form-actions">
+            <button id="add-patient" type="button" class="secondary">
+              Add patient
             </button>
-          </div>
-
-          <label class="field">
-            <span>Clinic</span>
-            <select id="clinic" name="clinic" required disabled>
-              <option value="">Loading clinics…</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span>Service</span>
-            <select id="service" name="service" required disabled>
-              <option value="">Select a clinic first</option>
-            </select>
-          </label>
-
-          <div class="split">
-            <label class="field">
-              <span>Amount paid</span>
-              <input
-                id="amount"
-                name="amount"
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0.00"
-                required
-              />
-            </label>
-
-            <label class="field">
-              <span>Invoice date</span>
-              <input id="date" name="date" type="date" required />
-            </label>
           </div>
 
           <label class="check">
@@ -98,10 +55,37 @@
             <span id="status-pill" class="pill">Idle</span>
           </div>
           <ol id="log" class="log">
-            <li class="muted">Enter a national ID and find the patient.</li>
+            <li class="muted">Press Add patient to start a batch.</li>
           </ol>
           <div id="result" class="result hidden"></div>
         </aside>
+      </section>
+
+      <section
+        id="missing-panel"
+        class="missing-panel hidden"
+        aria-label="Patients without files"
+      >
+        <div class="missing-head">
+          <h2>Patients without a file</h2>
+          <p>These national IDs were not found in IMDAD, so no invoice was created.</p>
+        </div>
+        <div class="table-wrap">
+          <table id="missing-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>National ID</th>
+                <th>Clinic</th>
+                <th>Service</th>
+                <th>Price</th>
+                <th>Invoice date</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </section>
     </main>
     <script src="/static/app.js" type="module"></script>

@@ -1,7 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from .api_ops import (
     create_invoice_job,
+    create_invoices_batch,
     fetch_clinics,
     fetch_services,
     patient_meta,
@@ -28,6 +29,19 @@ class CreateInvoiceBody(BaseModel):
     service: str = Field(..., min_length=1)
     amount: str = Field(..., min_length=1)
     date: str = Field(..., min_length=4)
+    headed: bool = False
+
+
+class BatchInvoiceItem(BaseModel):
+    national_id: str = Field(..., min_length=5)
+    clinic: str = Field(..., min_length=1)
+    service: str = Field(..., min_length=1)
+    amount: str = Field(..., min_length=1)
+    date: str = Field(..., min_length=4)
+
+
+class CreateInvoicesBatchBody(BaseModel):
+    items: List[BatchInvoiceItem] = Field(..., min_length=1)
     headed: bool = False
 
 
@@ -99,6 +113,20 @@ def create_invoice(body: CreateInvoiceBody) -> Dict[str, Any]:
             service=body.service,
             amount=body.amount,
             invoice_date=body.date,
+            headed=use_headed,
+        ).result()
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/invoices/batch")
+def create_invoices(body: CreateInvoicesBatchBody) -> Dict[str, Any]:
+    use_headed = body.headed or _headed_default()
+    try:
+        result = executor.submit(
+            create_invoices_batch,
+            items=[item.model_dump() for item in body.items],
             headed=use_headed,
         ).result()
         return result
