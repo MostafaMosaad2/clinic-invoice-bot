@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--national-id", help="Patient national ID / SSN")
     create.add_argument("--clinic", help="Clinic value or name (optional; prompted if omitted)")
     create.add_argument("--service", help="Service value or name (optional; prompted if omitted)")
-    create.add_argument("--amount", help="Cash amount paid")
+    create.add_argument("--amount", help="Amount paid by bank transfer")
     create.add_argument("--date", help="Invoice date YYYY-MM-DD or DD/MM/YYYY")
 
     sub.add_parser("inspect", help="Login and list clinics/services/date fields")

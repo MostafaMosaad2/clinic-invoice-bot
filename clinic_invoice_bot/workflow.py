@@ -131,6 +131,7 @@ def inspect_patient_services(page: Page, settings: Settings) -> None:
     for sel in (
         "input[name='cash_amount']",
         "input[name='net_amount']",
+        "select[name='bank_id']",
         "select[name='day8']",
         "select[name='month8']",
         "select[name='year8']",
@@ -202,16 +203,25 @@ def create_invoice(
         )
     print(f"Service added via إضافة : Add ({service_label})")
 
-    if page.locator("input[name='cash_amount']").count() == 0:
-        raise RuntimeError("cash_amount field missing after adding the service.")
+    if page.locator("input[name='net_amount']").count() == 0:
+        raise RuntimeError(
+            "Bank transfer amount field (net_amount) missing after adding the service."
+        )
 
-    paid = amount or ask("Amount paid (cash)")
-    page.fill("input[name='cash_amount']", str(paid))
-    # Credit card is also marked required in the UI; 0 is typically accepted for cash-only.
-    if page.locator("input[name='net_amount']").count():
-        current_net = page.input_value("input[name='net_amount']")
-        if not (current_net or "").strip():
-            page.fill("input[name='net_amount']", "0")
+    paid = amount or ask("Amount paid (bank transfer)")
+    # Price goes on تحويل بنكي (net_amount + bank_id), not الكاش.
+    if page.locator("input[name='cash_amount']").count():
+        page.fill("input[name='cash_amount']", "0")
+    page.fill("input[name='net_amount']", str(paid))
+    _select_bank_transfer(page)
+    page.evaluate(
+        """() => {
+          const cash = document.querySelector("input[name='cash_amount']");
+          const net = document.querySelector("input[name='net_amount']");
+          if (cash && typeof window.changex1 === "function") window.changex1(cash.value);
+          if (net && typeof window.changex14 === "function") window.changex14(net.value);
+        }"""
+    )
 
     # The finalize button calls get_rec() which is often undefined in this build.
     page.evaluate("() => { window.get_rec = window.get_rec || function () { return true; }; }")
@@ -406,6 +416,33 @@ def run_create_and_backdate(
         "date_updated_on_edit": True,
         "date": target_date,
     }
+
+
+def _select_bank_transfer(page: Page) -> None:
+    """Choose تحويل بنكي on the credit-card method dropdown."""
+    bank = page.locator("select[name='bank_id']")
+    if bank.count() == 0:
+        return
+    try:
+        bank.first.select_option(label="تحويل بنكي")
+        return
+    except Exception:
+        pass
+    matched = page.evaluate(
+        """() => {
+          const sel = document.querySelector("select[name='bank_id']");
+          if (!sel) return false;
+          const opt = Array.from(sel.options).find((o) =>
+            (o.textContent || "").includes("تحويل بنكي")
+          );
+          if (!opt) return false;
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }"""
+    )
+    if not matched:
+        raise RuntimeError("Could not select تحويل بنكي in the bank method list.")
 
 
 def _click_add_service(page: Page) -> None:
