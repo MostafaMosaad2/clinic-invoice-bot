@@ -94,6 +94,7 @@ def _invoice_result(
         "service": service,
         "amount": str(amount),
         "date": invoice_date,
+        "file_created": bool(result.get("file_created")),
     }
 
 
@@ -152,6 +153,10 @@ def create_invoices_batch(
                 service = str(item.get("service") or "").strip()
                 amount = str(item.get("amount") or "").strip()
                 invoice_date = str(item.get("date") or "").strip()
+                patient_name = str(item.get("name") or "").strip()
+                birth_date = str(item.get("birth_date") or "").strip()
+                phone = str(item.get("phone") or "").strip()
+                gender = str(item.get("gender") or "").strip()
                 row = {
                     "index": index,
                     "national_id": national_id,
@@ -167,7 +172,13 @@ def create_invoices_batch(
 
                 try:
                     matches = search_patients_by_national_id(page, settings, national_id)
-                    if not matches:
+                    file_details = {
+                        "patient_name": patient_name,
+                        "birth_date": birth_date,
+                        "phone": phone,
+                        "gender": gender,
+                    }
+                    if not matches and not all(file_details.values()):
                         missing_files.append(
                             {
                                 **row,
@@ -176,7 +187,7 @@ def create_invoices_batch(
                         )
                         continue
 
-                    patient = matches[0]
+                    patient = matches[0] if matches else None
                     result = run_create_and_backdate(
                         page,
                         settings,
@@ -184,7 +195,9 @@ def create_invoices_batch(
                         service=service,
                         amount=amount,
                         invoice_date=invoice_date,
-                        st_id=patient.get("st_id"),
+                        national_id=national_id,
+                        st_id=None if not patient else patient.get("st_id"),
+                        **({} if patient else file_details),
                     )
                     payload = _invoice_result(
                         result=result,
@@ -194,8 +207,11 @@ def create_invoices_batch(
                         invoice_date=invoice_date,
                         national_id=national_id,
                     )
-                    payload["patient_name"] = patient.get("name") or payload.get("patient_name")
-                    payload["st_id"] = patient.get("st_id") or payload.get("st_id")
+                    known = patient or {}
+                    payload["patient_name"] = (
+                        known.get("name") or payload.get("patient_name") or patient_name
+                    )
+                    payload["st_id"] = known.get("st_id") or payload.get("st_id")
                     created.append(payload)
                 except Exception as exc:
                     message = str(exc)

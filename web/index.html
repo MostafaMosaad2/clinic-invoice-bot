@@ -20,7 +20,7 @@
         <h1>Create clinic invoices for many patients.</h1>
         <p class="lede">
           Add each patient with national ID, clinic, service, price, and date.
-          Create invoices for everyone who has a file, then review who does not.
+          If someone has no file, enter their name, birth date, and phone to create it in IMDAD.
         </p>
       </header>
 
@@ -68,24 +68,15 @@
       >
         <div class="missing-head">
           <h2>Patients without a file</h2>
-          <p>These national IDs were not found in IMDAD, so no invoice was created.</p>
+          <p>
+            These national IDs are not in IMDAD. Enter the name, birth date, phone,
+            and gender. The file is created first, then the invoice.
+          </p>
         </div>
-        <div class="table-wrap">
-          <table id="missing-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>National ID</th>
-                <th>Clinic</th>
-                <th>Service</th>
-                <th>Price</th>
-                <th>Invoice date</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <div id="missing-forms" class="file-list"></div>
+        <button id="create-files" type="button" class="primary" disabled>
+          Create file and invoice
+        </button>
       </section>
     </main>
     <script src="/static/app.js" type="module"></script>

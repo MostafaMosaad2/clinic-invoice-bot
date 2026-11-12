@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -91,10 +92,30 @@ def resolve_patient_by_national_id(
     page: Page,
     settings: Settings,
     national_id: str,
+    *,
+    name: str | None = None,
+    birth_date: str | None = None,
+    phone: str | None = None,
+    gender: str | None = None,
 ) -> dict:
     matches = search_patients_by_national_id(page, settings, national_id)
     if not matches:
-        raise RuntimeError(f"No patient found for national ID: {national_id}")
+        details = _new_patient_details(
+            national_id,
+            name=name,
+            birth_date=birth_date,
+            phone=phone,
+            gender=gender,
+        )
+        return create_patient_file(
+            page,
+            settings,
+            national_id=national_id,
+            name=details["name"],
+            birth_date=details["birth_date"],
+            phone=details["phone"],
+            gender=details["gender"],
+        )
     if len(matches) > 1:
         # Prefer exact file/phone packaging; take first stable match.
         print(f"Found {len(matches)} patients for {national_id}; using first match.")
@@ -103,6 +124,130 @@ def resolve_patient_by_national_id(
         f"Patient found: {chosen['name']} (st_id={chosen['st_id']}, phone={chosen.get('phone')})"
     )
     return chosen
+
+
+def create_patient_file(
+    page: Page,
+    settings: Settings,
+    *,
+    national_id: str,
+    name: str,
+    birth_date: str,
+    phone: str,
+    gender: str,
+) -> dict:
+    """Open IMDAD ملف جديد and save a patient file."""
+    ssn = re.sub(r"\D", "", str(national_id or ""))
+    if len(ssn) != 10:
+        raise RuntimeError("National ID must be 10 digits to create a patient file.")
+    full_name = str(name or "").strip()
+    phone_value = re.sub(r"\s+", "", str(phone or ""))
+    if not full_name:
+        raise RuntimeError("Patient name is required to create a file.")
+    if not phone_value:
+        raise RuntimeError("Phone number is required to create a file.")
+    gender_value = _gender_value(gender)
+    day, month, year = _parse_date_parts(birth_date)
+    if year < 1900 or year > datetime.now().year:
+        raise RuntimeError(f"Birth year {year} is outside the clinic form (1900–{datetime.now().year}).")
+
+    url = f"{settings.base_url.rstrip('/')}/stq_add.php"
+    print(f"No file for {ssn}. Creating patient file: {url}")
+    page.goto(url, wait_until="domcontentloaded")
+    if "login.php" in page.url:
+        raise RuntimeError("Not logged in; cannot open the new patient form.")
+    if page.locator("#fname").count() == 0:
+        raise RuntimeError("New patient form did not load.")
+
+    page.fill("#fname", full_name)
+    if page.locator("input[name='ename']").count():
+        page.fill("input[name='ename']", full_name)
+    page.fill("#ssn", ssn)
+    page.select_option("select[name='day12']", str(day))
+    page.select_option("select[name='month12']", str(month))
+    page.select_option("select[name='year12']", str(year))
+    page.select_option("#gender", gender_value)
+    nationality = page.locator("#n")
+    if nationality.count() and not (nationality.input_value() or "").strip():
+        page.select_option("#n", "1")
+    page.fill("#phone", phone_value)
+
+    page.evaluate("() => { window.get = function () { return true; }; }")
+    submit = page.locator("form").filter(has=page.locator("#fname")).locator(
+        "input[type='submit']"
+    )
+    if submit.count() == 0:
+        raise RuntimeError("Could not find the new-patient save button.")
+
+    def _accept_dialog(dialog) -> None:
+        dialog.accept()
+
+    page.on("dialog", _accept_dialog)
+    try:
+        submit.first.click()
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(800)
+    finally:
+        page.remove_listener("dialog", _accept_dialog)
+    if "login.php" in page.url:
+        raise RuntimeError("Session expired while creating the patient file.")
+
+    matches = search_patients_by_national_id(page, settings, ssn)
+    if not matches:
+        snippet = " ".join(page.locator("body").inner_text().split())[:240]
+        raise RuntimeError(
+            f"Patient file was submitted but national ID {ssn} was not found afterward. {snippet}"
+        )
+    chosen = matches[0]
+    chosen["file_created"] = True
+    chosen["national_id"] = ssn
+    chosen["name"] = chosen.get("name") or full_name
+    chosen["phone"] = chosen.get("phone") or phone_value
+    print(f"Created patient file: {chosen['name']} (st_id={chosen['st_id']})")
+    return chosen
+
+
+def _gender_value(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"1", "male", "m", "ذكر"}:
+        return "1"
+    if value in {"2", "female", "f", "انثى", "أنثى", "انثي"}:
+        return "2"
+    raise RuntimeError("Gender must be male or female.")
+
+
+def _new_patient_details(
+    national_id: str,
+    *,
+    name: str | None,
+    birth_date: str | None,
+    phone: str | None,
+    gender: str | None,
+) -> dict[str, str]:
+    details = {
+        "name": str(name or "").strip(),
+        "birth_date": str(birth_date or "").strip(),
+        "phone": str(phone or "").strip(),
+        "gender": str(gender or "").strip(),
+    }
+    if all(details.values()):
+        details["gender"] = _gender_value(details["gender"])
+        return details
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            f"No patient found for national ID: {national_id}. "
+            "Name, birth date, phone, and gender are required to create a file."
+        )
+    print(f"No patient file for national ID {national_id}. Enter details to create one.")
+    details["name"] = details["name"] or ask("Patient name")
+    details["birth_date"] = details["birth_date"] or ask(
+        "Birth date (YYYY-MM-DD or DD/MM/YYYY)"
+    )
+    details["phone"] = details["phone"] or ask("Phone number")
+    details["gender"] = _gender_value(
+        details["gender"] or ask("Gender (1 male, 2 female)")
+    )
+    return details
 
 
 def inspect_patient_services(page: Page, settings: Settings) -> None:
@@ -150,6 +295,10 @@ def create_invoice(
     invoice_date: str | None = None,
     national_id: str | None = None,
     st_id: str | None = None,
+    patient_name: str | None = None,
+    birth_date: str | None = None,
+    phone: str | None = None,
+    gender: str | None = None,
 ) -> dict:
     """
     Create an invoice for the configured patient visit.
@@ -161,7 +310,15 @@ def create_invoice(
 
     patient = None
     if national_id:
-        patient = resolve_patient_by_national_id(page, settings, national_id)
+        patient = resolve_patient_by_national_id(
+            page,
+            settings,
+            national_id,
+            name=patient_name,
+            birth_date=birth_date,
+            phone=phone,
+            gender=gender,
+        )
         st_id = patient["st_id"]
     st_id = st_id or _st_id_from_url(settings.patient_services_url)
     if not st_id:
@@ -203,27 +360,13 @@ def create_invoice(
         )
     print(f"Service added via إضافة : Add ({service_label})")
 
-    if page.locator("input[name='net_amount']").count() == 0:
-        raise RuntimeError(
-            "Bank transfer amount field (net_amount) missing after adding the service."
-        )
-
     paid = amount or ask("Amount paid (bank transfer)")
-    # Price goes on تحويل بنكي (net_amount + bank_id), not الكاش.
-    if page.locator("input[name='cash_amount']").count():
-        page.fill("input[name='cash_amount']", "0")
-    page.fill("input[name='net_amount']", str(paid))
-    _select_bank_transfer(page)
-    page.evaluate(
-        """() => {
-          const cash = document.querySelector("input[name='cash_amount']");
-          const net = document.querySelector("input[name='net_amount']");
-          if (cash && typeof window.changex1 === "function") window.changex1(cash.value);
-          if (net && typeof window.changex14 === "function") window.changex14(net.value);
-        }"""
-    )
+    # Cash must be "0.00". A bare "0" is empty in PHP, and IMDAD then books the price as كاش.
+    _apply_bank_transfer_amount(page, paid)
 
     # The finalize button calls get_rec() which is often undefined in this build.
+    # Set the payment again immediately before submit so a late page script cannot move it back to cash.
+    _apply_bank_transfer_amount(page, paid)
     page.evaluate("() => { window.get_rec = window.get_rec || function () { return true; }; }")
     finalize = page.locator("input#submit[name='submit'], input[type='submit'][value*='Referral']")
     finalize.first.click()
@@ -236,11 +379,13 @@ def create_invoice(
         created["patient_name"] = patient.get("name")
         created["national_id"] = patient.get("national_id")
         created["phone"] = patient.get("phone")
+        created["file_created"] = bool(patient.get("file_created"))
     print(
         "Created invoice: "
         f"rec_id={created.get('rec_id')} serial={created.get('serial')} "
         f"edit={created.get('edit_url')}"
     )
+    created["amount"] = str(paid)
     return created
 
 
@@ -252,6 +397,7 @@ def change_invoice_date_from_patient(
     rec_id: str | None,
     serial: str | None,
     new_date: str,
+    amount: str | None = None,
 ) -> dict:
     """
     User-required flow:
@@ -311,6 +457,9 @@ def change_invoice_date_from_patient(
         )
 
     _set_day_month_year(page, new_date)
+    if amount:
+        # The edit form posts the payment fields again. Put the price on تحويل بنكي here too.
+        _apply_bank_transfer_amount(page, amount)
     _save_invoice_edit(page)
     print(f"Invoice date changed to {new_date}. Current page: {page.url}")
     return {
@@ -383,6 +532,10 @@ def run_create_and_backdate(
     invoice_date: str | None = None,
     national_id: str | None = None,
     st_id: str | None = None,
+    patient_name: str | None = None,
+    birth_date: str | None = None,
+    phone: str | None = None,
+    gender: str | None = None,
 ) -> dict:
     target_date = invoice_date or ask(
         "Invoice date (YYYY-MM-DD or DD/MM/YYYY)"
@@ -397,6 +550,10 @@ def run_create_and_backdate(
         amount=amount,
         national_id=national_id,
         st_id=st_id,
+        patient_name=patient_name,
+        birth_date=birth_date,
+        phone=phone,
+        gender=gender,
     )
 
     print("Invoice created. Now re-entering patient page to change invoice date...")
@@ -407,6 +564,7 @@ def run_create_and_backdate(
         rec_id=created.get("rec_id"),
         serial=created.get("serial"),
         new_date=target_date,
+        amount=str(created.get("amount") or amount or ""),
     )
     print("Done: invoice created and date updated from patient invoices page.")
     return {
@@ -418,31 +576,63 @@ def run_create_and_backdate(
     }
 
 
-def _select_bank_transfer(page: Page) -> None:
-    """Choose تحويل بنكي on the credit-card method dropdown."""
+def _apply_bank_transfer_amount(page: Page, amount: str) -> None:
+    """Put the price on تحويل بنكي and keep الكاش at 0.00."""
+    paid = str(amount).strip()
+    if not paid:
+        raise RuntimeError("Amount is required for bank transfer.")
+    if page.locator("input[name='net_amount']").count() == 0:
+        raise RuntimeError(
+            "Bank transfer amount field (net_amount) is missing on the invoice form."
+        )
+
+    if page.locator("input[name='cash_amount']").count():
+        page.fill("input[name='cash_amount']", "0.00")
+    page.fill("input[name='net_amount']", paid)
     bank = page.locator("select[name='bank_id']")
-    if bank.count() == 0:
-        return
-    try:
-        bank.first.select_option(label="تحويل بنكي")
-        return
-    except Exception:
-        pass
-    matched = page.evaluate(
-        """() => {
+    if bank.count():
+        try:
+            bank.first.select_option(label="تحويل بنكي")
+        except Exception:
+            pass
+
+    applied = page.evaluate(
+        """(paid) => {
+          const setVal = (el, value) => {
+            if (!el) return;
+            el.value = value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          };
+          const cash = document.querySelector("input[name='cash_amount']");
+          const net = document.querySelector("input[name='net_amount']");
           const sel = document.querySelector("select[name='bank_id']");
-          if (!sel) return false;
-          const opt = Array.from(sel.options).find((o) =>
-            (o.textContent || "").includes("تحويل بنكي")
-          );
-          if (!opt) return false;
-          sel.value = opt.value;
-          sel.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        }"""
+          setVal(cash, "0.00");
+          setVal(net, paid);
+          if (sel) {
+            const opt = Array.from(sel.options).find((o) =>
+              (o.textContent || "").includes("تحويل بنكي")
+            );
+            if (!opt) return "missing-bank";
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          if (cash && typeof window.changex1 === "function") window.changex1("0.00");
+          if (net && typeof window.changex14 === "function") window.changex14(paid);
+          return {
+            cash: cash ? cash.value : "",
+            net: net ? net.value : "",
+            bank: sel ? (sel.selectedOptions[0] && sel.selectedOptions[0].textContent || "").trim() : "",
+          };
+        }""",
+        paid,
     )
-    if not matched:
+    if applied == "missing-bank":
         raise RuntimeError("Could not select تحويل بنكي in the bank method list.")
+    if not isinstance(applied, dict) or str(applied.get("net", "")).strip() != paid:
+        raise RuntimeError("Failed to write the price into the تحويل بنكي amount field.")
+    if applied.get("cash") not in {"0.00", "0", "0.0"}:
+        raise RuntimeError("Failed to clear the الكاش amount field.")
 
 
 def _click_add_service(page: Page) -> None:

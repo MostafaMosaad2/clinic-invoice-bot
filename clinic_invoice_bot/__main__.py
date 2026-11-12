@@ -32,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--service", help="Service value or name (optional; prompted if omitted)")
     create.add_argument("--amount", help="Amount paid by bank transfer")
     create.add_argument("--date", help="Invoice date YYYY-MM-DD or DD/MM/YYYY")
+    create.add_argument("--name", help="Patient name, used when no file exists")
+    create.add_argument("--birth-date", help="Birth date YYYY-MM-DD or DD/MM/YYYY")
+    create.add_argument("--phone", help="Phone number, used when no file exists")
+    create.add_argument("--gender", help="male or female, used when no file exists")
 
     sub.add_parser("inspect", help="Login and list clinics/services/date fields")
 
@@ -69,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
                 service=args.service,
                 amount=args.amount,
                 invoice_date=args.date,
+                patient_name=args.name,
+                birth_date=args.birth_date,
+                phone=args.phone,
+                gender=args.gender,
             )
             _pause()
             return 0

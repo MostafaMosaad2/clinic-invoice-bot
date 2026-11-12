@@ -10,7 +10,8 @@ const els = {
   metaCount: document.getElementById("meta-count"),
   metaUser: document.getElementById("meta-user"),
   missingPanel: document.getElementById("missing-panel"),
-  missingTableBody: document.querySelector("#missing-table tbody"),
+  missingForms: document.getElementById("missing-forms"),
+  createFiles: document.getElementById("create-files"),
 };
 
 /** @type {{value: string, text: string}[]} */
@@ -278,31 +279,96 @@ function addPatientRow(prefill = {}) {
 
 function hideMissing() {
   els.missingPanel.classList.add("hidden");
-  els.missingTableBody.innerHTML = "";
+  els.missingForms.innerHTML = "";
+  els.createFiles.disabled = true;
+}
+
+function syncFileButton() {
+  const cards = Array.from(els.missingForms.querySelectorAll(".file-card"));
+  const ready = cards.length > 0 && cards.every((card) => {
+    const nationalId = card.querySelector('[data-file="national_id"]').value.trim();
+    const name = card.querySelector('[data-file="name"]').value.trim();
+    const birthDate = card.querySelector('[data-file="birth_date"]').value;
+    const phone = card.querySelector('[data-file="phone"]').value.trim();
+    const gender = card.querySelector('[data-file="gender"]').value;
+    return nationalId.length === 10 && name && birthDate && phone && gender;
+  });
+  els.createFiles.disabled = !ready;
 }
 
 function showMissing(rows) {
-  els.missingTableBody.innerHTML = "";
+  els.missingForms.innerHTML = "";
   if (!rows.length) {
     hideMissing();
     return;
   }
 
   rows.forEach((item, index) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${index + 1}</td>
-      <td>${escapeHtml(item.national_id || "—")}</td>
-      <td>${escapeHtml(item.clinic_label || item.clinic || "—")}</td>
-      <td>${escapeHtml(item.service_label || item.service || "—")}</td>
-      <td>${escapeHtml(item.amount || "—")}</td>
-      <td>${escapeHtml(item.date || "—")}</td>
-      <td>${escapeHtml(item.reason || "No patient file found")}</td>
+    const card = document.createElement("article");
+    card.className = "file-card";
+    card.dataset.clinic = item.clinic || "";
+    card.dataset.service = item.service || "";
+    card.dataset.amount = item.amount || "";
+    card.dataset.date = item.date || "";
+    card.dataset.clinicLabel = item.clinic_label || "";
+    card.dataset.serviceLabel = item.service_label || "";
+    card.innerHTML = `
+      <div class="row-top">
+        <span class="row-number">${index + 1}</span>
+        <span class="row-title">${escapeHtml(item.clinic_label || item.clinic || "Invoice")} · ${escapeHtml(item.service_label || item.service || "service")} · ${escapeHtml(item.amount || "")}</span>
+      </div>
+      <div class="file-grid">
+        <label class="field">
+          <span>National ID</span>
+          <input data-file="national_id" type="text" inputmode="numeric" maxlength="10" value="${escapeHtml(item.national_id || "")}" required />
+        </label>
+        <label class="field">
+          <span>Name</span>
+          <input data-file="name" type="text" placeholder="Patient name" required />
+        </label>
+        <label class="field">
+          <span>Birth date</span>
+          <input data-file="birth_date" type="date" required />
+        </label>
+        <label class="field">
+          <span>Phone</span>
+          <input data-file="phone" type="tel" placeholder="05xxxxxxxx" required />
+        </label>
+        <label class="field">
+          <span>Gender</span>
+          <select data-file="gender" required>
+            <option value="">Choose</option>
+            <option value="1">Male</option>
+            <option value="2">Female</option>
+          </select>
+        </label>
+      </div>
     `;
-    els.missingTableBody.appendChild(tr);
+    card.querySelectorAll("input, select").forEach((el) => {
+      el.addEventListener("input", syncFileButton);
+      el.addEventListener("change", syncFileButton);
+    });
+    els.missingForms.appendChild(card);
   });
+  syncFileButton();
   els.missingPanel.classList.remove("hidden");
   els.missingPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function collectFileItems() {
+  return Array.from(els.missingForms.querySelectorAll(".file-card")).map((card) => ({
+    national_id: card.querySelector('[data-file="national_id"]').value.trim(),
+    name: card.querySelector('[data-file="name"]').value.trim(),
+    birth_date: card.querySelector('[data-file="birth_date"]').value,
+    phone: card.querySelector('[data-file="phone"]').value.trim(),
+    gender: card.querySelector('[data-file="gender"]').value,
+    clinic: card.dataset.clinic,
+    service: card.dataset.service,
+    amount: card.dataset.amount,
+    date: card.dataset.date,
+    clinic_label: card.dataset.clinicLabel || "",
+    service_label: card.dataset.serviceLabel || "",
+  }));
 }
 
 function escapeHtml(value) {
@@ -329,8 +395,9 @@ function showResult(payload) {
       ]
         .filter(Boolean)
         .join(" · ");
+      const fileNote = item.file_created ? " · file created" : "";
       const link = item.list_url || item.invoice_url;
-      return `<li>${escapeHtml(ids || "Invoice created")}${
+      return `<li>${escapeHtml((ids || "Invoice created") + fileNote)}${
         link
           ? ` — <a href="${escapeHtml(link)}" target="_blank" rel="noopener">open</a>`
           : ""
@@ -418,7 +485,7 @@ els.form.addEventListener("submit", async (event) => {
     );
     if (result.missing_count) {
       log(
-        `${result.missing_count} patient(s) have no file — see the table below.`,
+        `${result.missing_count} patient(s) have no file — enter their details below.`,
         "err"
       );
     }
@@ -435,6 +502,71 @@ els.form.addEventListener("submit", async (event) => {
     els.submit.textContent = "Create invoice";
     els.addPatient.disabled = false;
     syncSubmitEnabled();
+  }
+});
+
+els.createFiles.addEventListener("click", async () => {
+  const items = collectFileItems();
+  if (!items.length || els.createFiles.disabled) return;
+
+  els.createFiles.disabled = true;
+  els.createFiles.classList.add("busy");
+  els.createFiles.textContent = "Creating…";
+  els.submit.disabled = true;
+  els.addPatient.disabled = true;
+  setPill("Running", "loading");
+  log(`Creating ${items.length} patient file${items.length === 1 ? "" : "s"}, then the invoice${items.length === 1 ? "" : "s"}…`);
+
+  try {
+    const result = await api("/api/invoices/batch", {
+      method: "POST",
+      body: JSON.stringify({
+        items: items.map(({ national_id, clinic, service, amount, date, name, birth_date, phone, gender }) => ({
+          national_id,
+          clinic,
+          service,
+          amount,
+          date,
+          name,
+          birth_date,
+          phone,
+          gender,
+        })),
+        headed: els.headed.checked,
+      }),
+    });
+
+    const labelByNid = new Map(
+      items.map((item) => [
+        item.national_id,
+        { clinic_label: item.clinic_label, service_label: item.service_label },
+      ])
+    );
+    const missing = (result.missing_files || []).map((row) => ({
+      ...row,
+      ...(labelByNid.get(row.national_id) || {}),
+    }));
+    const filesCreated = (result.created || []).filter((item) => item.file_created).length;
+
+    setPill("Done", "ok");
+    if (filesCreated) log(`Created ${filesCreated} patient file(s) in IMDAD.`, "ok");
+    log(
+      `Created ${result.created_count || 0} invoice(s).`,
+      result.created_count ? "ok" : ""
+    );
+    if (result.error_count) log(`${result.error_count} row(s) failed with errors.`, "err");
+    showResult({ ...result, missing_files: missing });
+    showMissing(missing);
+  } catch (err) {
+    setPill("Error", "err");
+    log(err.message || String(err), "err");
+    syncFileButton();
+  } finally {
+    els.createFiles.classList.remove("busy");
+    els.createFiles.textContent = "Create file and invoice";
+    els.addPatient.disabled = false;
+    syncSubmitEnabled();
+    syncFileButton();
   }
 });
 

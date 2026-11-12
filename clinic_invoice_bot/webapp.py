@@ -38,6 +38,10 @@ class BatchInvoiceItem(BaseModel):
     service: str = Field(..., min_length=1)
     amount: str = Field(..., min_length=1)
     date: str = Field(..., min_length=4)
+    name: str = ""
+    birth_date: str = ""
+    phone: str = ""
+    gender: str = ""
 
 
 class CreateInvoicesBatchBody(BaseModel):
