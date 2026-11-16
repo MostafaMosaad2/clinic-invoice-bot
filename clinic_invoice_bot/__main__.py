@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--birth-date", help="Birth date YYYY-MM-DD or DD/MM/YYYY")
     create.add_argument("--phone", help="Phone number, used when no file exists")
     create.add_argument("--gender", help="male or female, used when no file exists")
+    create.add_argument("--nationality", help="Imdad nationality value, 1 Saudi or 27 Other")
 
     sub.add_parser("inspect", help="Login and list clinics/services/date fields")
 
@@ -77,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                 birth_date=args.birth_date,
                 phone=args.phone,
                 gender=args.gender,
+                nationality=args.nationality,
             )
             _pause()
             return 0

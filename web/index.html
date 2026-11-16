@@ -61,23 +61,25 @@
         </aside>
       </section>
 
-      <section
-        id="missing-panel"
-        class="missing-panel hidden"
-        aria-label="Patients without files"
-      >
-        <div class="missing-head">
-          <h2>Patients without a file</h2>
-          <p>
-            These national IDs are not in IMDAD. Enter the name, birth date, phone,
-            and gender. The file is created first, then the invoice.
-          </p>
-        </div>
-        <div id="missing-forms" class="file-list"></div>
-        <button id="create-files" type="button" class="primary" disabled>
-          Create file and invoice
-        </button>
-      </section>
+      <dialog id="patient-modal" class="patient-modal" aria-label="Patient registration">
+        <section id="missing-panel" class="missing-panel">
+          <div class="missing-head">
+            <h2>تسجيل مريض جديد</h2>
+            <p>
+              هذا الرقم غير مسجل في إمداد. أدخل البيانات لإنشاء الملف، ثم تُستكمل الفاتورة
+              بتحويل بنكي.
+            </p>
+          </div>
+          <p id="modal-status" class="modal-status" aria-live="polite"></p>
+          <div id="missing-forms" class="file-list"></div>
+          <div class="modal-actions">
+            <button id="cancel-files" type="button" class="secondary">Cancel</button>
+            <button id="create-files" type="button" class="primary" disabled>
+              Create Patient &amp; Continue
+            </button>
+          </div>
+        </section>
+      </dialog>
     </main>
     <script src="/static/app.js" type="module"></script>
   </body>

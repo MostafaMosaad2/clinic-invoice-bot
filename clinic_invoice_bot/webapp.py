@@ -14,6 +14,7 @@ from .api_ops import (
     fetch_clinics,
     fetch_services,
     patient_meta,
+    public_error,
     search_patients,
 )
 
@@ -42,6 +43,7 @@ class BatchInvoiceItem(BaseModel):
     birth_date: str = ""
     phone: str = ""
     gender: str = ""
+    nationality: str = ""
 
 
 class CreateInvoicesBatchBody(BaseModel):
@@ -63,7 +65,7 @@ def meta() -> Dict[str, Any]:
     try:
         return patient_meta()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.get("/api/patients")
@@ -80,7 +82,7 @@ def patients(
         ).result()
         return {"items": items}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.get("/api/clinics")
@@ -90,7 +92,7 @@ def clinics(headed: Optional[bool] = Query(default=None)) -> Dict[str, Any]:
         items = executor.submit(fetch_clinics, headed=use_headed).result()
         return {"items": items}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.get("/api/services")
@@ -103,7 +105,7 @@ def services(
         items = executor.submit(fetch_services, clinic_id, headed=use_headed).result()
         return {"items": items}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.post("/api/invoices")
@@ -121,7 +123,7 @@ def create_invoice(body: CreateInvoiceBody) -> Dict[str, Any]:
         ).result()
         return result
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.post("/api/invoices/batch")
@@ -135,7 +137,7 @@ def create_invoices(body: CreateInvoicesBatchBody) -> Dict[str, Any]:
         ).result()
         return result
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=public_error(exc)) from exc
 
 
 @app.get("/")

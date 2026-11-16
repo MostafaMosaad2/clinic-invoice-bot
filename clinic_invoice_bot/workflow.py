@@ -97,15 +97,16 @@ def resolve_patient_by_national_id(
     birth_date: str | None = None,
     phone: str | None = None,
     gender: str | None = None,
+    nationality: str | None = None,
 ) -> dict:
     matches = search_patients_by_national_id(page, settings, national_id)
     if not matches:
         details = _new_patient_details(
-            national_id,
             name=name,
             birth_date=birth_date,
             phone=phone,
             gender=gender,
+            nationality=nationality,
         )
         return create_patient_file(
             page,
@@ -115,15 +116,60 @@ def resolve_patient_by_national_id(
             birth_date=details["birth_date"],
             phone=details["phone"],
             gender=details["gender"],
+            nationality=details["nationality"],
         )
     if len(matches) > 1:
-        # Prefer exact file/phone packaging; take first stable match.
-        print(f"Found {len(matches)} patients for {national_id}; using first match.")
-    chosen = matches[0]
-    print(
-        f"Patient found: {chosen['name']} (st_id={chosen['st_id']}, phone={chosen.get('phone')})"
-    )
-    return chosen
+        print(f"Found {len(matches)} patient files; using the first match.")
+    print("Patient file found.")
+    return matches[0]
+
+
+class PatientFileRequired(RuntimeError):
+    """Imdad has no file and the registration fields were not provided."""
+
+
+def validate_patient_registration(
+    *,
+    national_id: str,
+    name: str,
+    birth_date: str,
+    phone: str,
+    gender: str,
+    nationality: str,
+) -> dict[str, str]:
+    """Check registration fields. Messages are Arabic and contain no patient data."""
+    ssn = re.sub(r"\D", "", str(national_id or ""))
+    if len(ssn) != 10:
+        raise RuntimeError("رقم الهوية أو الإقامة يجب أن يتكون من 10 أرقام.")
+    full_name = " ".join(str(name or "").split())
+    if len(full_name) < 2:
+        raise RuntimeError("الاسم بالكامل مطلوب.")
+    phone_digits = re.sub(r"\D", "", str(phone or ""))
+    if not 9 <= len(phone_digits) <= 15:
+        raise RuntimeError("رقم الجوال غير صالح.")
+    try:
+        day, month, year = _parse_date_parts(str(birth_date or ""))
+        born = datetime(year, month, day)
+    except (RuntimeError, ValueError):
+        raise RuntimeError("تاريخ الميلاد غير صالح.") from None
+    today = datetime.now().date()
+    if year < 1900 or born.date() > today:
+        raise RuntimeError("تاريخ الميلاد خارج النطاق المسموح.")
+    gender_value = _gender_value(gender)
+    nationality_value = str(nationality or "").strip()
+    if not nationality_value.isdigit():
+        raise RuntimeError("الجنسية مطلوبة.")
+    return {
+        "national_id": ssn,
+        "name": full_name,
+        "birth_date": f"{year:04d}-{month:02d}-{day:02d}",
+        "phone": phone_digits,
+        "gender": gender_value,
+        "nationality": nationality_value,
+        "day": str(day),
+        "month": str(month),
+        "year": str(year),
+    }
 
 
 def create_patient_file(
@@ -135,42 +181,44 @@ def create_patient_file(
     birth_date: str,
     phone: str,
     gender: str,
+    nationality: str = "1",
 ) -> dict:
-    """Open IMDAD ملف جديد and save a patient file."""
-    ssn = re.sub(r"\D", "", str(national_id or ""))
-    if len(ssn) != 10:
-        raise RuntimeError("National ID must be 10 digits to create a patient file.")
-    full_name = str(name or "").strip()
-    phone_value = re.sub(r"\s+", "", str(phone or ""))
-    if not full_name:
-        raise RuntimeError("Patient name is required to create a file.")
-    if not phone_value:
-        raise RuntimeError("Phone number is required to create a file.")
-    gender_value = _gender_value(gender)
-    day, month, year = _parse_date_parts(birth_date)
-    if year < 1900 or year > datetime.now().year:
-        raise RuntimeError(f"Birth year {year} is outside the clinic form (1900–{datetime.now().year}).")
+    """Open IMDAD ملف جديد and save a patient file. Reuse the file if it already exists."""
+    fields = validate_patient_registration(
+        national_id=national_id,
+        name=name,
+        birth_date=birth_date,
+        phone=phone,
+        gender=gender,
+        nationality=nationality,
+    )
+    existing = search_patients_by_national_id(page, settings, fields["national_id"])
+    if existing:
+        chosen = existing[0]
+        chosen["file_created"] = False
+        chosen["reused"] = True
+        print("Patient file already exists; reusing it.")
+        return chosen
 
     url = f"{settings.base_url.rstrip('/')}/stq_add.php"
-    print(f"No file for {ssn}. Creating patient file: {url}")
+    print("Creating a new patient file in IMDAD.")
     page.goto(url, wait_until="domcontentloaded")
     if "login.php" in page.url:
-        raise RuntimeError("Not logged in; cannot open the new patient form.")
+        raise RuntimeError("انتهت جلسة إمداد. أعد المحاولة.")
     if page.locator("#fname").count() == 0:
-        raise RuntimeError("New patient form did not load.")
+        raise RuntimeError("تعذر فتح نموذج ملف المريض في إمداد.")
 
-    page.fill("#fname", full_name)
+    page.fill("#fname", fields["name"])
     if page.locator("input[name='ename']").count():
-        page.fill("input[name='ename']", full_name)
-    page.fill("#ssn", ssn)
-    page.select_option("select[name='day12']", str(day))
-    page.select_option("select[name='month12']", str(month))
-    page.select_option("select[name='year12']", str(year))
-    page.select_option("#gender", gender_value)
-    nationality = page.locator("#n")
-    if nationality.count() and not (nationality.input_value() or "").strip():
-        page.select_option("#n", "1")
-    page.fill("#phone", phone_value)
+        page.fill("input[name='ename']", fields["name"])
+    page.fill("#ssn", fields["national_id"])
+    page.select_option("select[name='day12']", fields["day"])
+    page.select_option("select[name='month12']", fields["month"])
+    page.select_option("select[name='year12']", fields["year"])
+    page.select_option("#gender", fields["gender"])
+    if page.locator("#n").count():
+        page.select_option("#n", fields["nationality"])
+    page.fill("#phone", fields["phone"])
 
     page.evaluate("() => { window.get = function () { return true; }; }")
     submit = page.locator("form").filter(has=page.locator("#fname")).locator(
@@ -190,20 +238,18 @@ def create_patient_file(
     finally:
         page.remove_listener("dialog", _accept_dialog)
     if "login.php" in page.url:
-        raise RuntimeError("Session expired while creating the patient file.")
+        raise RuntimeError("انتهت جلسة إمداد أثناء إنشاء الملف.")
 
-    matches = search_patients_by_national_id(page, settings, ssn)
+    matches = search_patients_by_national_id(page, settings, fields["national_id"])
     if not matches:
-        snippet = " ".join(page.locator("body").inner_text().split())[:240]
-        raise RuntimeError(
-            f"Patient file was submitted but national ID {ssn} was not found afterward. {snippet}"
-        )
+        raise RuntimeError("لم يؤكد إمداد إنشاء الملف. لم تُنشأ فاتورة. أعد المحاولة.")
     chosen = matches[0]
     chosen["file_created"] = True
-    chosen["national_id"] = ssn
-    chosen["name"] = chosen.get("name") or full_name
-    chosen["phone"] = chosen.get("phone") or phone_value
-    print(f"Created patient file: {chosen['name']} (st_id={chosen['st_id']})")
+    chosen["reused"] = False
+    chosen["national_id"] = fields["national_id"]
+    chosen["name"] = chosen.get("name") or fields["name"]
+    chosen["phone"] = chosen.get("phone") or fields["phone"]
+    print("Patient file created in IMDAD.")
     return chosen
 
 
@@ -213,39 +259,51 @@ def _gender_value(raw: str | None) -> str:
         return "1"
     if value in {"2", "female", "f", "انثى", "أنثى", "انثي"}:
         return "2"
-    raise RuntimeError("Gender must be male or female.")
+    raise RuntimeError("الجنس مطلوب.")
 
 
-def _new_patient_details(
-    national_id: str,
+def registration_is_complete(
     *,
     name: str | None,
     birth_date: str | None,
     phone: str | None,
     gender: str | None,
+    nationality: str | None,
+) -> bool:
+    return all(
+        str(value or "").strip()
+        for value in (name, birth_date, phone, gender, nationality)
+    )
+
+
+def _new_patient_details(
+    *,
+    name: str | None,
+    birth_date: str | None,
+    phone: str | None,
+    gender: str | None,
+    nationality: str | None,
 ) -> dict[str, str]:
     details = {
         "name": str(name or "").strip(),
         "birth_date": str(birth_date or "").strip(),
         "phone": str(phone or "").strip(),
         "gender": str(gender or "").strip(),
+        "nationality": str(nationality or "").strip(),
     }
-    if all(details.values()):
-        details["gender"] = _gender_value(details["gender"])
+    if registration_is_complete(**details):
         return details
     if not sys.stdin.isatty():
-        raise RuntimeError(
-            f"No patient found for national ID: {national_id}. "
-            "Name, birth date, phone, and gender are required to create a file."
-        )
-    print(f"No patient file for national ID {national_id}. Enter details to create one.")
+        raise PatientFileRequired("لم يتم العثور على ملف المريض.")
+    print("No patient file in IMDAD. Enter the registration details.")
     details["name"] = details["name"] or ask("Patient name")
     details["birth_date"] = details["birth_date"] or ask(
         "Birth date (YYYY-MM-DD or DD/MM/YYYY)"
     )
     details["phone"] = details["phone"] or ask("Phone number")
-    details["gender"] = _gender_value(
-        details["gender"] or ask("Gender (1 male, 2 female)")
+    details["gender"] = details["gender"] or ask("Gender (1 male, 2 female)")
+    details["nationality"] = details["nationality"] or ask(
+        "Nationality (1 Saudi, 27 Other)"
     )
     return details
 
@@ -299,6 +357,7 @@ def create_invoice(
     birth_date: str | None = None,
     phone: str | None = None,
     gender: str | None = None,
+    nationality: str | None = None,
 ) -> dict:
     """
     Create an invoice for the configured patient visit.
@@ -318,6 +377,7 @@ def create_invoice(
             birth_date=birth_date,
             phone=phone,
             gender=gender,
+            nationality=nationality,
         )
         st_id = patient["st_id"]
     st_id = st_id or _st_id_from_url(settings.patient_services_url)
@@ -380,10 +440,11 @@ def create_invoice(
         created["national_id"] = patient.get("national_id")
         created["phone"] = patient.get("phone")
         created["file_created"] = bool(patient.get("file_created"))
+        created["reused"] = bool(patient.get("reused"))
+    created["payment_method"] = "تحويل بنكي"
     print(
         "Created invoice: "
-        f"rec_id={created.get('rec_id')} serial={created.get('serial')} "
-        f"edit={created.get('edit_url')}"
+        f"rec_id={created.get('rec_id')} serial={created.get('serial')}"
     )
     created["amount"] = str(paid)
     return created
@@ -536,6 +597,7 @@ def run_create_and_backdate(
     birth_date: str | None = None,
     phone: str | None = None,
     gender: str | None = None,
+    nationality: str | None = None,
 ) -> dict:
     target_date = invoice_date or ask(
         "Invoice date (YYYY-MM-DD or DD/MM/YYYY)"
@@ -554,6 +616,7 @@ def run_create_and_backdate(
         birth_date=birth_date,
         phone=phone,
         gender=gender,
+        nationality=nationality,
     )
 
     print("Invoice created. Now re-entering patient page to change invoice date...")
@@ -576,18 +639,37 @@ def run_create_and_backdate(
     }
 
 
-def _apply_bank_transfer_amount(page: Page, amount: str) -> None:
-    """Put the price on تحويل بنكي and keep الكاش at 0.00."""
+def bank_transfer_fields(amount: str) -> dict[str, str]:
+    """Payment fields for تحويل بنكي. bank_value 1232 is the option seen on the Imdad form."""
     paid = str(amount).strip()
     if not paid:
-        raise RuntimeError("Amount is required for bank transfer.")
+        raise RuntimeError("المبلغ مطلوب.")
+    return {
+        "cash_amount": "0.00",
+        "net_amount": paid,
+        "bank_label": "تحويل بنكي",
+        "bank_value": "1232",
+    }
+
+
+def bank_transfer_option_value(options: list[dict[str, str]]) -> str:
+    for option in options:
+        if "تحويل بنكي" in str(option.get("text") or ""):
+            return str(option["value"])
+    raise RuntimeError("تعذر اختيار تحويل بنكي.")
+
+
+def _apply_bank_transfer_amount(page: Page, amount: str) -> None:
+    """Put the price on تحويل بنكي and keep الكاش at 0.00."""
+    fields = bank_transfer_fields(amount)
+    paid = fields["net_amount"]
     if page.locator("input[name='net_amount']").count() == 0:
         raise RuntimeError(
             "Bank transfer amount field (net_amount) is missing on the invoice form."
         )
 
     if page.locator("input[name='cash_amount']").count():
-        page.fill("input[name='cash_amount']", "0.00")
+        page.fill("input[name='cash_amount']", fields["cash_amount"])
     page.fill("input[name='net_amount']", paid)
     bank = page.locator("select[name='bank_id']")
     if bank.count():
@@ -607,11 +689,13 @@ def _apply_bank_transfer_amount(page: Page, amount: str) -> None:
           const cash = document.querySelector("input[name='cash_amount']");
           const net = document.querySelector("input[name='net_amount']");
           const sel = document.querySelector("select[name='bank_id']");
-          setVal(cash, "0.00");
+          setVal(cash, "0.00"); // cash stays 0.00 so Imdad does not book the price as كاش
           setVal(net, paid);
           if (sel) {
             const opt = Array.from(sel.options).find((o) =>
               (o.textContent || "").includes("تحويل بنكي")
+            ) || Array.from(sel.options).find((o) =>
+              o.value === "1232" && (o.textContent || "").includes("تحويل بنكي")
             );
             if (!opt) return "missing-bank";
             sel.value = opt.value;

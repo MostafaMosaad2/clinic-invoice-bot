@@ -9,9 +9,11 @@ const els = {
   result: document.getElementById("result"),
   metaCount: document.getElementById("meta-count"),
   metaUser: document.getElementById("meta-user"),
-  missingPanel: document.getElementById("missing-panel"),
+  patientModal: document.getElementById("patient-modal"),
   missingForms: document.getElementById("missing-forms"),
   createFiles: document.getElementById("create-files"),
+  cancelFiles: document.getElementById("cancel-files"),
+  modalStatus: document.getElementById("modal-status"),
 };
 
 /** @type {{value: string, text: string}[]} */
@@ -19,6 +21,7 @@ let clinicOptions = [];
 /** @type {Map<string, {value: string, text: string}[]>} */
 const servicesCache = new Map();
 let rowSeq = 0;
+let fileSubmitInFlight = false;
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -277,10 +280,29 @@ function addPatientRow(prefill = {}) {
   return row;
 }
 
+function setModalStatus(message, kind = "") {
+  els.modalStatus.textContent = message || "";
+  els.modalStatus.className = `modal-status ${kind}`.trim();
+}
+
 function hideMissing() {
-  els.missingPanel.classList.add("hidden");
   els.missingForms.innerHTML = "";
   els.createFiles.disabled = true;
+  setModalStatus("");
+  if (els.patientModal.open) els.patientModal.close();
+}
+
+function registrationError(item) {
+  if (!/^\d{10}$/.test(item.national_id)) {
+    return "رقم الهوية أو الإقامة يجب أن يتكون من 10 أرقام.";
+  }
+  if ((item.name || "").trim().length < 2) return "الاسم بالكامل مطلوب.";
+  if (!item.birth_date) return "تاريخ الميلاد مطلوب.";
+  const phoneDigits = (item.phone || "").replace(/\D/g, "");
+  if (phoneDigits.length < 9 || phoneDigits.length > 15) return "رقم الجوال غير صالح.";
+  if (!item.gender) return "الجنس مطلوب.";
+  if (!item.nationality) return "الجنسية مطلوبة.";
+  return "";
 }
 
 function syncFileButton() {
@@ -291,7 +313,8 @@ function syncFileButton() {
     const birthDate = card.querySelector('[data-file="birth_date"]').value;
     const phone = card.querySelector('[data-file="phone"]').value.trim();
     const gender = card.querySelector('[data-file="gender"]').value;
-    return nationalId.length === 10 && name && birthDate && phone && gender;
+    const nationality = card.querySelector('[data-file="nationality"]').value;
+    return nationalId.length === 10 && name && birthDate && phone && gender && nationality;
   });
   els.createFiles.disabled = !ready;
 }
@@ -319,27 +342,34 @@ function showMissing(rows) {
       </div>
       <div class="file-grid">
         <label class="field">
-          <span>National ID</span>
+          <span>رقم الهوية / الإقامة</span>
           <input data-file="national_id" type="text" inputmode="numeric" maxlength="10" value="${escapeHtml(item.national_id || "")}" required />
         </label>
         <label class="field">
-          <span>Name</span>
-          <input data-file="name" type="text" placeholder="Patient name" required />
+          <span>الاسم بالكامل</span>
+          <input data-file="name" type="text" value="${escapeHtml(item.name || "")}" required />
         </label>
         <label class="field">
-          <span>Birth date</span>
-          <input data-file="birth_date" type="date" required />
+          <span>تاريخ الميلاد</span>
+          <input data-file="birth_date" type="date" value="${escapeHtml(item.birth_date || "")}" required />
         </label>
         <label class="field">
-          <span>Phone</span>
-          <input data-file="phone" type="tel" placeholder="05xxxxxxxx" required />
+          <span>رقم الجوال</span>
+          <input data-file="phone" type="tel" value="${escapeHtml(item.phone || "")}" placeholder="05xxxxxxxx" required />
         </label>
         <label class="field">
-          <span>Gender</span>
+          <span>الجنس</span>
           <select data-file="gender" required>
-            <option value="">Choose</option>
-            <option value="1">Male</option>
-            <option value="2">Female</option>
+            <option value="">اختر</option>
+            <option value="1">ذكر</option>
+            <option value="2">أنثى</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>الجنسية</span>
+          <select data-file="nationality" required>
+            <option value="1">Saudi</option>
+            <option value="27">Other</option>
           </select>
         </label>
       </div>
@@ -348,11 +378,16 @@ function showMissing(rows) {
       el.addEventListener("input", syncFileButton);
       el.addEventListener("change", syncFileButton);
     });
+    const gender = card.querySelector('[data-file="gender"]');
+    const nationality = card.querySelector('[data-file="nationality"]');
+    if (item.gender) gender.value = item.gender;
+    if (item.nationality) nationality.value = item.nationality;
     els.missingForms.appendChild(card);
   });
   syncFileButton();
-  els.missingPanel.classList.remove("hidden");
-  els.missingPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!els.patientModal.open) els.patientModal.showModal();
+  const firstName = els.missingForms.querySelector('[data-file="name"]');
+  if (firstName) firstName.focus();
 }
 
 function collectFileItems() {
@@ -362,6 +397,7 @@ function collectFileItems() {
     birth_date: card.querySelector('[data-file="birth_date"]').value,
     phone: card.querySelector('[data-file="phone"]').value.trim(),
     gender: card.querySelector('[data-file="gender"]').value,
+    nationality: card.querySelector('[data-file="nationality"]').value,
     clinic: card.dataset.clinic,
     service: card.dataset.service,
     amount: card.dataset.amount,
@@ -485,7 +521,7 @@ els.form.addEventListener("submit", async (event) => {
     );
     if (result.missing_count) {
       log(
-        `${result.missing_count} patient(s) have no file — enter their details below.`,
+        `${result.missing_count} patient(s) have no file — complete the registration window.`,
         "err"
       );
     }
@@ -505,15 +541,36 @@ els.form.addEventListener("submit", async (event) => {
   }
 });
 
+els.cancelFiles.addEventListener("click", () => {
+  if (fileSubmitInFlight) return;
+  hideMissing();
+  log("Registration cancelled. Invoice rows were kept.");
+});
+
+els.patientModal.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (fileSubmitInFlight) return;
+  hideMissing();
+});
+
 els.createFiles.addEventListener("click", async () => {
+  if (fileSubmitInFlight) return;
   const items = collectFileItems();
+  const problem = items.map(registrationError).find(Boolean);
+  if (problem) {
+    setModalStatus(problem, "err");
+    return;
+  }
   if (!items.length || els.createFiles.disabled) return;
 
+  fileSubmitInFlight = true;
   els.createFiles.disabled = true;
   els.createFiles.classList.add("busy");
   els.createFiles.textContent = "Creating…";
+  els.cancelFiles.disabled = true;
   els.submit.disabled = true;
   els.addPatient.disabled = true;
+  setModalStatus("جارٍ إنشاء الملف في إمداد ثم متابعة الفاتورة…", "loading");
   setPill("Running", "loading");
   log(`Creating ${items.length} patient file${items.length === 1 ? "" : "s"}, then the invoice${items.length === 1 ? "" : "s"}…`);
 
@@ -521,7 +578,7 @@ els.createFiles.addEventListener("click", async () => {
     const result = await api("/api/invoices/batch", {
       method: "POST",
       body: JSON.stringify({
-        items: items.map(({ national_id, clinic, service, amount, date, name, birth_date, phone, gender }) => ({
+        items: items.map(({ national_id, clinic, service, amount, date, name, birth_date, phone, gender, nationality }) => ({
           national_id,
           clinic,
           service,
@@ -531,6 +588,7 @@ els.createFiles.addEventListener("click", async () => {
           birth_date,
           phone,
           gender,
+          nationality,
         })),
         headed: els.headed.checked,
       }),
@@ -542,13 +600,20 @@ els.createFiles.addEventListener("click", async () => {
         { clinic_label: item.clinic_label, service_label: item.service_label },
       ])
     );
+    const drafts = new Map(items.map((item) => [item.national_id, item]));
     const missing = (result.missing_files || []).map((row) => ({
+      ...(drafts.get(row.national_id) || {}),
+      ...row,
+      ...(labelByNid.get(row.national_id) || {}),
+    }));
+    const failed = (result.errors || []).map((row) => ({
+      ...(drafts.get(row.national_id) || {}),
       ...row,
       ...(labelByNid.get(row.national_id) || {}),
     }));
     const filesCreated = (result.created || []).filter((item) => item.file_created).length;
 
-    setPill("Done", "ok");
+    setPill(result.error_count ? "Error" : "Done", result.error_count ? "err" : "ok");
     if (filesCreated) log(`Created ${filesCreated} patient file(s) in IMDAD.`, "ok");
     log(
       `Created ${result.created_count || 0} invoice(s).`,
@@ -556,19 +621,34 @@ els.createFiles.addEventListener("click", async () => {
     );
     if (result.error_count) log(`${result.error_count} row(s) failed with errors.`, "err");
     showResult({ ...result, missing_files: missing });
-    showMissing(missing);
+    if (failed.length) {
+      showMissing(failed);
+      setModalStatus(failed[0].error || "تعذر إنشاء الملف. راجع البيانات وأعد المحاولة.", "err");
+    } else if (missing.length) {
+      showMissing(missing);
+      setModalStatus("أكمل بيانات المرضى غير المسجلين.", "err");
+    } else {
+      hideMissing();
+      setPill("Done", "ok");
+    }
   } catch (err) {
     setPill("Error", "err");
-    log(err.message || String(err), "err");
+    const message = err.message || "تعذر الاتصال بنظام إمداد. أعد المحاولة.";
+    log(message, "err");
+    setModalStatus(message, "err");
     syncFileButton();
   } finally {
+    fileSubmitInFlight = false;
     els.createFiles.classList.remove("busy");
-    els.createFiles.textContent = "Create file and invoice";
+    els.createFiles.textContent = "Create Patient & Continue";
+    els.cancelFiles.disabled = false;
     els.addPatient.disabled = false;
     syncSubmitEnabled();
     syncFileButton();
   }
 });
+
+export { showMissing, registrationError };
 
 (async function boot() {
   addPatientRow();

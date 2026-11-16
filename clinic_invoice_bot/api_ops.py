@@ -1,14 +1,59 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .browser import open_browser
 from .config import Settings, load_settings
-from .workflow import login, run_create_and_backdate, search_patients_by_national_id, select_options
+from .workflow import (
+    PatientFileRequired,
+    login,
+    registration_is_complete,
+    run_create_and_backdate,
+    search_patients_by_national_id,
+    select_options,
+)
 
 _lock = threading.Lock()
+_recent_success: dict[tuple[str, str, str, str, str], tuple[float, dict[str, Any]]] = {}
+_RECENT_SECONDS = 600
+
+
+def _invoice_key(national_id: str, clinic: str, service: str, amount: str, invoice_date: str) -> tuple[str, str, str, str, str]:
+    return (national_id, clinic, service, amount, invoice_date)
+
+
+def recall_recent_invoice(key: tuple[str, str, str, str, str]) -> dict[str, Any] | None:
+    hit = _recent_success.get(key)
+    if not hit:
+        return None
+    saved_at, payload = hit
+    if time.time() - saved_at > _RECENT_SECONDS:
+        _recent_success.pop(key, None)
+        return None
+    return payload
+
+
+def remember_recent_invoice(key: tuple[str, str, str, str, str], payload: dict[str, Any]) -> None:
+    now = time.time()
+    stale = [item for item, (saved_at, _) in _recent_success.items() if now - saved_at > _RECENT_SECONDS]
+    for item in stale:
+        _recent_success.pop(item, None)
+    _recent_success[key] = (now, payload)
+
+
+def public_error(exc: Exception) -> str:
+    text = str(exc)
+    lowered = text.lower()
+    if "انتهت جلسة" in text or "login.php" in lowered or "session" in lowered:
+        return "انتهت جلسة إمداد. أعد المحاولة."
+    if "timeout" in lowered or "net::" in lowered or "err_" in lowered or "connection" in lowered:
+        return "تعذر الاتصال بنظام إمداد. أعد المحاولة."
+    if any("\u0600" <= char <= "\u06FF" for char in text):
+        return text
+    return "تعذر إكمال العملية في إمداد. لم تُنشأ فاتورة جديدة."
 
 
 def get_settings(*, headed: bool | None = None) -> Settings:
@@ -95,6 +140,8 @@ def _invoice_result(
         "amount": str(amount),
         "date": invoice_date,
         "file_created": bool(result.get("file_created")),
+        "reused": bool(result.get("reused")),
+        "payment_method": result.get("payment_method") or "تحويل بنكي",
     }
 
 
@@ -157,6 +204,7 @@ def create_invoices_batch(
                 birth_date = str(item.get("birth_date") or "").strip()
                 phone = str(item.get("phone") or "").strip()
                 gender = str(item.get("gender") or "").strip()
+                nationality = str(item.get("nationality") or "").strip()
                 row = {
                     "index": index,
                     "national_id": national_id,
@@ -167,22 +215,29 @@ def create_invoices_batch(
                 }
 
                 if not national_id or not clinic or not service or not amount or not invoice_date:
-                    errors.append({**row, "error": "Missing required fields."})
+                    errors.append({**row, "error": "بيانات الفاتورة غير مكتملة."})
+                    continue
+
+                invoice_key = _invoice_key(national_id, clinic, service, amount, invoice_date)
+                remembered = recall_recent_invoice(invoice_key)
+                if remembered:
+                    created.append(dict(remembered))
                     continue
 
                 try:
                     matches = search_patients_by_national_id(page, settings, national_id)
-                    file_details = {
-                        "patient_name": patient_name,
-                        "birth_date": birth_date,
-                        "phone": phone,
-                        "gender": gender,
-                    }
-                    if not matches and not all(file_details.values()):
+                    file_ready = registration_is_complete(
+                        name=patient_name,
+                        birth_date=birth_date,
+                        phone=phone,
+                        gender=gender,
+                        nationality=nationality,
+                    )
+                    if not matches and not file_ready:
                         missing_files.append(
                             {
                                 **row,
-                                "reason": "No patient file found for this national ID.",
+                                "reason": "لم يتم العثور على ملف المريض.",
                             }
                         )
                         continue
@@ -197,7 +252,17 @@ def create_invoices_batch(
                         invoice_date=invoice_date,
                         national_id=national_id,
                         st_id=None if not patient else patient.get("st_id"),
-                        **({} if patient else file_details),
+                        **(
+                            {}
+                            if patient
+                            else {
+                                "patient_name": patient_name,
+                                "birth_date": birth_date,
+                                "phone": phone,
+                                "gender": gender,
+                                "nationality": nationality,
+                            }
+                        ),
                     )
                     payload = _invoice_result(
                         result=result,
@@ -213,17 +278,11 @@ def create_invoices_batch(
                     )
                     payload["st_id"] = known.get("st_id") or payload.get("st_id")
                     created.append(payload)
+                    remember_recent_invoice(invoice_key, payload)
+                except PatientFileRequired:
+                    missing_files.append({**row, "reason": "لم يتم العثور على ملف المريض."})
                 except Exception as exc:
-                    message = str(exc)
-                    if "No patient found" in message:
-                        missing_files.append(
-                            {
-                                **row,
-                                "reason": "No patient file found for this national ID.",
-                            }
-                        )
-                    else:
-                        errors.append({**row, "error": message})
+                    errors.append({**row, "error": public_error(exc)})
 
     return {
         "ok": True,
